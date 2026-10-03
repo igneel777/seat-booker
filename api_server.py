@@ -30,7 +30,6 @@ if __name__ == "__main__":
     import uvicorn
 
     settings = get_app_settings()
-    # access_log off: our middleware already logs every request, with the correlation id.
     uvicorn.run(
         "api_server:app",
         host=settings.host,
