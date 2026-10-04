@@ -18,6 +18,7 @@ from utils.auth import Role
 
 BASE_URL = "http://localhost:8000"
 ADMIN = "admin-1"
+MAX_CONNECTIONS = 200
 
 
 @dataclass
@@ -35,7 +36,7 @@ class Api:
             base_url=base_url,
             timeout=httpx.Timeout(60, pool=None),
             # keepalive < uvicorn's 5s, so we never reuse a socket it's closing.
-            limits=httpx.Limits(max_connections=200, keepalive_expiry=1),
+            limits=httpx.Limits(max_connections=MAX_CONNECTIONS, keepalive_expiry=1),
         )
         self._tokens: dict[str, str] = {}
 
@@ -99,9 +100,20 @@ class Api:
 
 
 async def burst(calls: list[Awaitable[Result]]) -> list[Result]:
-    """Fire all calls at once; a client-side error becomes status 0 instead of
-    crashing the burst. Results come back in the same order as `calls`."""
-    results = await asyncio.gather(*calls, return_exceptions=True)
+    """Fire all calls concurrently, at most MAX_CONNECTIONS in flight; a
+    client-side error becomes status 0 instead of crashing the burst. Results
+    come back in the same order as `calls`.
+
+    The semaphore matters at scale: httpx rescans its whole pending queue on
+    every connection release, so 20k requests queued inside httpx is O(n^2)
+    and pegs the event loop before anything is sent."""
+    gate = asyncio.Semaphore(MAX_CONNECTIONS)
+
+    async def gated(call: Awaitable[Result]) -> Result:
+        async with gate:
+            return await call
+
+    results = await asyncio.gather(*map(gated, calls), return_exceptions=True)
     return [r if isinstance(r, Result) else Result(0, 0.0, repr(r)) for r in results]
 
 

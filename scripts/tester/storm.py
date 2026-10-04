@@ -14,7 +14,7 @@ from collections.abc import Awaitable
 
 from scripts.tester.helpers import BASE_URL, Api, Result, burst, check
 
-TOTAL_REQUESTS = 2_000  # raise to 20_000 for the full storm
+TOTAL_REQUESTS = 20_000  # raise to 20_000 for the full storm
 PRICE = 10_000
 
 HOT = [f"A{i}" for i in range(1, 6)]
@@ -248,7 +248,7 @@ def print_latency(results: list[Result], elapsed: float) -> None:
     p50, p95 = statistics.quantiles(ms, n=100)[49], statistics.quantiles(ms, n=100)[94]
     print(
         f"latency p50 {p50:.0f}ms, p95 {p95:.0f}ms, max {ms[-1]:.0f}ms "
-        f"(includes client-side queueing); {len(results) / elapsed:.0f} req/s"
+        f"(server round trip); {len(results) / elapsed:.0f} req/s"
     )
 
 
