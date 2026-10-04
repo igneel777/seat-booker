@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 
-from models.db import SeatStatus
+from models.db import Seat, SeatStatus, Show
 
 MAX_SEATS_PER_SHOW = 500
 
@@ -35,3 +35,16 @@ class ShowResponse(BaseModel):
     id: UUID
     name: str
     seats: list[SeatResponse]
+
+    @classmethod
+    def from_models(cls, show: Show, seats: list[Seat]) -> "ShowResponse":
+        return cls(
+            id=show.id,
+            name=show.name,
+            seats=[
+                SeatResponse(
+                    id=s.id, label=s.label, status=s.status, price_paise=s.price_paise
+                )
+                for s in seats
+            ],
+        )

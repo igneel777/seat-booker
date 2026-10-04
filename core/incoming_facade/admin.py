@@ -1,6 +1,6 @@
 from core.incoming_ports import AdminPort
 from core.outgoing_ports import DBPort
-from models.api import SeatResponse, ShowResponse
+from models.api import ShowResponse
 from models.db import Seat, Show
 
 
@@ -19,13 +19,4 @@ class AdminFacade(AdminPort):
             for label in seat_labels
         ]
         await self._db.create_show_with_seats(show, seats)
-        return ShowResponse(
-            id=show.id,
-            name=show.name,
-            seats=[
-                SeatResponse(
-                    id=s.id, label=s.label, status=s.status, price_paise=s.price_paise
-                )
-                for s in seats
-            ],
-        )
+        return ShowResponse.from_models(show, seats)
