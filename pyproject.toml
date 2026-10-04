@@ -4,8 +4,11 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "asgi-correlation-id>=5.0.1",
+    "asyncpg>=0.31.0",
     "fastapi>=0.142.2",
     "pydantic-settings>=2.15.0",
+    "sqlalchemy[asyncio]>=2.0.54",
+    "sqlmodel>=0.0.47",
     "uvicorn[standard]>=0.54.0",
 ]
 
@@ -31,7 +34,7 @@ select = [
 fixable = ["ALL"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["middlewares", "routes", "settings", "utils"]
+known-first-party = ["core", "infra", "middlewares", "models", "routes", "settings", "utils"]
 
 [tool.ruff.format]
 quote-style = "double"
