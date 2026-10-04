@@ -10,7 +10,6 @@ class Show(SQLModel, table=True):
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     name: str = Field(nullable=False)
-    starts_at: datetime = Field(sa_type=DateTime(timezone=True), nullable=False)
     created_at: datetime | None = Field(
         default=None,
         sa_type=DateTime(timezone=True),

@@ -28,11 +28,13 @@ class Seat(SQLModel, table=True):
             "status <> 'BOOKED' OR booked_at IS NOT NULL",
             name="ck_seats_booked_at",
         ),
+        CheckConstraint("price_paise >= 0", name="ck_seats_price_non_negative"),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     show_id: UUID = Field(foreign_key="shows.id", index=True, nullable=False)
     label: str = Field(nullable=False)
+    price_paise: int = Field(nullable=False)
     status: SeatStatus = Field(
         default=SeatStatus.AVAILABLE,
         sa_type=SAEnum(SeatStatus, name="seat_status"),
