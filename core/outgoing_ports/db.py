@@ -21,6 +21,10 @@ class DBPort(ABC):
     # --- standalone, each atomic -------------------------------------------
 
     @abstractmethod
+    async def ping(self) -> None:
+        """Round-trip to the DB; raises if it is unreachable or too slow."""
+
+    @abstractmethod
     async def create_show_with_seats(self, show: Show, seats: list[Seat]) -> None: ...
 
     @abstractmethod
@@ -86,8 +90,19 @@ class DBPort(ABC):
     ) -> Booking | None: ...
 
     @abstractmethod
-    async def get_booking_labels(self, txn: Transaction, booking_id: UUID) -> list[str]:
-        """Seat labels of the booking, sorted."""
+    async def insert_booking(self, txn: Transaction, booking: Booking) -> None: ...
 
     @abstractmethod
-    async def insert_booking(self, txn: Transaction, booking: Booking) -> None: ...
+    async def mark_booking_cancelled(
+        self, txn: Transaction, booking_id: UUID, user_id: str
+    ) -> bool:
+        """Set cancelled_at if the booking is this user's and not yet cancelled.
+
+        Returns whether a row was updated.
+        """
+
+    @abstractmethod
+    async def delete_booking_reservations(
+        self, txn: Transaction, booking_id: UUID
+    ) -> None:
+        """Delete the booking's seat rows, making those seats AVAILABLE."""

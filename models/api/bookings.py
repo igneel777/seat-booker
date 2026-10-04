@@ -1,3 +1,4 @@
+from enum import StrEnum
 from typing import Annotated
 from uuid import UUID
 
@@ -11,7 +12,7 @@ IdempotencyKey = Annotated[
 ]
 
 
-class ReserveSeatsRequest(BaseModel):
+class BookSeatsRequest(BaseModel):
     seats: list[NonEmptyStr] = Field(
         min_length=1, max_length=get_booking_settings().per_hold_limit
     )
@@ -23,9 +24,17 @@ class ReserveSeatsRequest(BaseModel):
         return reject_duplicate_labels(seats)
 
 
+class BookingStatus(StrEnum):
+    """Derived from bookings.cancelled_at; never stored."""
+
+    CONFIRMED = "CONFIRMED"
+    CANCELLED = "CANCELLED"
+
+
 class BookingResponse(BaseModel):
     booking_id: UUID
     show_id: UUID
     seats: list[str]
     amount_paise: int
     idempotency_key: str
+    status: BookingStatus

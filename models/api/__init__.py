@@ -1,4 +1,4 @@
-from models.api.bookings import BookingResponse, ReserveSeatsRequest
+from models.api.bookings import BookingResponse, BookingStatus, BookSeatsRequest
 from models.api.holds import HoldResponse, HoldSeatsRequest
 from models.api.shows import (
     CreateShowRequest,
@@ -9,10 +9,11 @@ from models.api.shows import (
 
 __all__ = [
     "BookingResponse",
+    "BookingStatus",
     "CreateShowRequest",
     "HoldResponse",
     "HoldSeatsRequest",
-    "ReserveSeatsRequest",
+    "BookSeatsRequest",
     "SeatResponse",
     "SeatStatus",
     "ShowResponse",

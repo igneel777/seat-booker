@@ -22,7 +22,7 @@ class UserPort(ABC):
         """Idempotent: a missing, expired or someone else's hold is a no-op."""
 
     @abstractmethod
-    async def reserve_seats(
+    async def book_seats(
         self,
         show_id: UUID,
         seat_labels: list[str],
@@ -33,3 +33,7 @@ class UserPort(ABC):
 
         Raises HTTPException: 404 unknown labels, 409 seats taken or key reused.
         """
+
+    @abstractmethod
+    async def cancel_booking(self, booking_id: UUID, user_id: str) -> None:
+        """Idempotent: a missing, cancelled or someone else's booking is a no-op."""

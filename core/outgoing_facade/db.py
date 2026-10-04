@@ -1,10 +1,11 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -14,6 +15,12 @@ from core.seat_rules import seat_status
 from infra.db_client import DBClient
 from models.api import SeatStatus
 from models.db import Booking, ReservationStatus, Seat, SeatReservation, Show
+from utils.logging import get_logger
+
+logger = get_logger("seat_booker.db")
+
+# A probe must answer fast; a hung pool checkout counts as down.
+_PING_TIMEOUT_SECONDS = 2
 
 
 class _PgTransaction(Transaction):
@@ -33,6 +40,11 @@ class DBFacade(DBPort):
         self._client = client
 
     # --- standalone, each atomic -------------------------------------------
+
+    async def ping(self) -> None:
+        async with asyncio.timeout(_PING_TIMEOUT_SECONDS):
+            async with self._client.connection() as session:
+                await session.exec(select(1))
 
     async def create_show_with_seats(self, show: Show, seats: list[Seat]) -> None:
         # Show and seats commit together, or not at all.
@@ -84,6 +96,8 @@ class DBFacade(DBPort):
                     col(SeatReservation.hold_expires_at) < func.now(),
                 )
             )
+            if result.rowcount:
+                logger.info("released %d expired hold seats", result.rowcount)
             return result.rowcount
 
     # --- transaction + primitives ------------------------------------------
@@ -95,6 +109,7 @@ class DBFacade(DBPort):
                 yield _PgTransaction(session)
         except IntegrityError as e:
             # A unique backstop fired under a race (seat index / user+key).
+            logger.error("integrity error, transaction rolled back", exc_info=True)
             raise HTTPException(
                 status.HTTP_409_CONFLICT, "Error processing request"
             ) from e
@@ -176,19 +191,30 @@ class DBFacade(DBPort):
             )
         ).first()
 
-    async def get_booking_labels(self, txn: Transaction, booking_id: UUID) -> list[str]:
-        return list(
-            (
-                await _session(txn).exec(
-                    select(Seat.label)
-                    .join(SeatReservation, col(SeatReservation.seat_id) == Seat.id)
-                    .where(SeatReservation.booking_id == booking_id)
-                    .order_by(col(Seat.label))
-                )
-            ).all()
-        )
-
     async def insert_booking(self, txn: Transaction, booking: Booking) -> None:
         session = _session(txn)
         session.add(booking)
         await session.flush()  # booking row must exist before reservations FK it
+
+    async def mark_booking_cancelled(
+        self, txn: Transaction, booking_id: UUID, user_id: str
+    ) -> bool:
+        # cancelled_at IS NULL: a second (or parallel) cancel matches nothing.
+        result = await _session(txn).exec(
+            update(Booking)
+            .where(
+                col(Booking.id) == booking_id,
+                col(Booking.booked_by) == user_id,
+                col(Booking.cancelled_at).is_(None),
+            )
+            .values(cancelled_at=func.now())
+            .returning(col(Booking.id))
+        )
+        return result.first() is not None
+
+    async def delete_booking_reservations(
+        self, txn: Transaction, booking_id: UUID
+    ) -> None:
+        await _session(txn).exec(
+            delete(SeatReservation).where(col(SeatReservation.booking_id) == booking_id)
+        )

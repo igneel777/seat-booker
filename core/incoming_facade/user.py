@@ -3,15 +3,24 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException, status
 
 from core.incoming_ports import UserPort
-from core.outgoing_ports import DBPort, Transaction
+from core.outgoing_ports import DBPort
 from core.seat_rules import is_taken_for, seat_status
-from models.api import BookingResponse, HoldResponse, SeatStatus, ShowResponse
+from models.api import (
+    BookingResponse,
+    BookingStatus,
+    HoldResponse,
+    SeatStatus,
+    ShowResponse,
+)
 from models.db import Booking, ReservationStatus, Seat, SeatReservation
 from settings import get_booking_settings
+from utils.logging import get_logger
+
+logger = get_logger("seat_booker.user")
 
 
 class UserFacade(UserPort):
-    """UserPort implementation. Owns the hold / reserve flows; any raise inside
+    """UserPort implementation. Owns the hold / book flows; any raise inside
     a transaction rolls it back."""
 
     def __init__(self, db: DBPort) -> None:
@@ -20,6 +29,7 @@ class UserFacade(UserPort):
     async def get_show(self, show_id: UUID) -> ShowResponse:
         found = await self._db.get_show_with_seats(show_id)
         if found is None:
+            logger.error("show %s not found", show_id, stack_info=True)
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"show {show_id} not found")
         show, seats = found
         return ShowResponse.from_models(show, seats)
@@ -39,6 +49,15 @@ class UserFacade(UserPort):
 
             already_held = await self._db.count_active_holds(txn, show_id, held_by)
             if already_held + len(seat_labels) > settings.per_hold_limit:
+                logger.error(
+                    "hold limit exceeded: user=%s show=%s held=%d req=%d limit=%d",
+                    held_by,
+                    show_id,
+                    already_held,
+                    len(seat_labels),
+                    settings.per_hold_limit,
+                    stack_info=True,
+                )
                 raise HTTPException(
                     status.HTTP_403_FORBIDDEN,
                     f"Cannot hold more than {settings.per_hold_limit} seats at a time",
@@ -83,21 +102,28 @@ class UserFacade(UserPort):
         await self._db.release_expired_holds()
         await self._db.release_hold(hold_id, held_by)
 
-    async def reserve_seats(
+    async def book_seats(
         self,
         show_id: UUID,
         seat_labels: list[str],
         idempotency_key: str,
         booked_by: str,
     ) -> BookingResponse:
+        await self._db.release_expired_holds()
         async with self._db.transaction() as txn:
             # Serialise requests with the same (user, key), so a parallel retry
             # waits and then replays instead of failing on the now-booked seats.
-            await self._db.advisory_lock(txn, f"reserve:{booked_by}:{idempotency_key}")
+            await self._db.advisory_lock(txn, f"book:{booked_by}:{idempotency_key}")
 
             existing = await self._db.find_booking(txn, booked_by, idempotency_key)
             if existing is not None:
-                return await self._replay(txn, existing, show_id, seat_labels)
+                logger.info(
+                    "idempotent replay of booking %s for user=%s key=%s",
+                    existing.id,
+                    booked_by,
+                    idempotency_key,
+                )
+                return self._replay(existing, show_id, seat_labels)
 
             seats = await self._db.lock_seats(txn, show_id, seat_labels)
             self._ensure_all_found(seat_labels, seats)
@@ -120,6 +146,7 @@ class UserFacade(UserPort):
                 booked_by=booked_by,
                 booked_at=now,
                 amount_paise=sum(s.price_paise for s in seats),
+                seat_labels=[s.label for s in seats],  # label order from lock_seats
             )
             await self._db.insert_booking(txn, booking)
             # Only this user's holds or expired holds remain; replace with BOOKED.
@@ -135,28 +162,45 @@ class UserFacade(UserPort):
                     for seat_id in seat_ids
                 ],
             )
-        return self._to_booking_response(booking, [s.label for s in seats])
+        return self._to_booking_response(booking)
 
-    async def _replay(
-        self,
-        txn: Transaction,
-        existing: Booking,
-        show_id: UUID,
-        seat_labels: list[str],
+    async def cancel_booking(self, booking_id: UUID, user_id: str) -> None:
+        # Both or neither: never cancelled-but-still-BOOKED, or the reverse.
+        async with self._db.transaction() as txn:
+            if await self._db.mark_booking_cancelled(txn, booking_id, user_id):
+                await self._db.delete_booking_reservations(txn, booking_id)
+            else:
+                # Still 204: unknown, not theirs, or already cancelled.
+                logger.info(
+                    "booking %s not cancelled by %s: missing, not theirs or already "
+                    "cancelled",
+                    booking_id,
+                    user_id,
+                )
+
+    @staticmethod
+    def _replay(
+        existing: Booking, show_id: UUID, seat_labels: list[str]
     ) -> BookingResponse:
-        """Same key: identical request replays the original, anything else is 409."""
-        booked_labels = await self._db.get_booking_labels(txn, existing.id)
-        if existing.show_id != show_id or set(booked_labels) != set(seat_labels):
+        """Same key: identical request returns the original booking in its current
+        state (CONFIRMED or CANCELLED); anything else is 409. Writes nothing."""
+        if existing.show_id != show_id or set(existing.seat_labels) != set(seat_labels):
+            logger.error(
+                "idempotency key reused with a different request: booking=%s",
+                existing.id,
+                stack_info=True,
+            )
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
                 "idempotency key already used with a different request",
             )
-        return self._to_booking_response(existing, booked_labels)
+        return UserFacade._to_booking_response(existing)
 
     @staticmethod
     def _ensure_all_found(labels: list[str], seats: list[Seat]) -> None:
         missing = sorted(set(labels) - {s.label for s in seats})
         if missing:
+            logger.error("seats not found: %s", missing, stack_info=True)
             raise HTTPException(
                 status.HTTP_404_NOT_FOUND, f"seats not found: {missing}"
             )
@@ -164,16 +208,22 @@ class UserFacade(UserPort):
     @staticmethod
     def _raise_if_taken(taken: list[str]) -> None:
         if taken:
+            logger.error("seats not available: %s", taken, stack_info=True)
             raise HTTPException(
                 status.HTTP_409_CONFLICT, f"seats not available: {taken}"
             )
 
     @staticmethod
-    def _to_booking_response(booking: Booking, labels: list[str]) -> BookingResponse:
+    def _to_booking_response(booking: Booking) -> BookingResponse:
         return BookingResponse(
             booking_id=booking.id,
             show_id=booking.show_id,
-            seats=labels,
+            seats=booking.seat_labels,
             amount_paise=booking.amount_paise,
             idempotency_key=booking.idempotency_key,
+            status=(
+                BookingStatus.CONFIRMED
+                if booking.cancelled_at is None
+                else BookingStatus.CANCELLED
+            ),
         )
