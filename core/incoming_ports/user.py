@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from uuid import UUID
 
-from models.api import HoldResponse, ShowResponse
+from models.api import BookingResponse, HoldResponse, ShowResponse
 
 
 class UserPort(ABC):
@@ -20,3 +20,16 @@ class UserPort(ABC):
     @abstractmethod
     async def release_hold(self, hold_id: UUID, held_by: str) -> None:
         """Idempotent: a missing, expired or someone else's hold is a no-op."""
+
+    @abstractmethod
+    async def reserve_seats(
+        self,
+        show_id: UUID,
+        seat_labels: list[str],
+        idempotency_key: str,
+        booked_by: str,
+    ) -> BookingResponse:
+        """All-or-nothing booking. Same key + same seats replays the original.
+
+        Raises HTTPException: 404 unknown labels, 409 seats taken or key reused.
+        """

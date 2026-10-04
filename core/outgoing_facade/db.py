@@ -1,4 +1,6 @@
-from datetime import datetime, timedelta
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -7,33 +9,30 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from core.outgoing_ports import DBPort
+from core.outgoing_ports import DBPort, Transaction
+from core.seat_rules import seat_status
 from infra.db_client import DBClient
 from models.api import SeatStatus
-from models.db import ReservationStatus, Seat, SeatReservation, Show
+from models.db import Booking, ReservationStatus, Seat, SeatReservation, Show
 
 
-def _seat_status(reservation: SeatReservation | None, now: datetime) -> SeatStatus:
-    """No row or an expired hold -> AVAILABLE."""
-    if reservation is None:
-        return SeatStatus.AVAILABLE
-    if reservation.status == ReservationStatus.BOOKED:
-        return SeatStatus.BOOKED
-    if reservation.hold_expires_at is not None and reservation.hold_expires_at > now:
-        return SeatStatus.HELD
-    return SeatStatus.AVAILABLE
+class _PgTransaction(Transaction):
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
 
 
-async def _db_now(session: AsyncSession) -> datetime:
-    # Postgres now() is fixed for the whole transaction: one clock for all checks.
-    return (await session.exec(select(func.now()))).one()
+def _session(txn: Transaction) -> AsyncSession:
+    assert isinstance(txn, _PgTransaction), "txn must come from DBFacade.transaction()"
+    return txn.session
 
 
 class DBFacade(DBPort):
-    """Postgres implementation of DBPort. Owns the transaction boundary."""
+    """Postgres implementation of DBPort. Executes statements; no business rules."""
 
     def __init__(self, client: DBClient) -> None:
         self._client = client
+
+    # --- standalone, each atomic -------------------------------------------
 
     async def create_show_with_seats(self, show: Show, seats: list[Seat]) -> None:
         # Show and seats commit together, or not at all.
@@ -59,136 +58,8 @@ class DBFacade(DBPort):
                     .order_by(col(Seat.label))
                 )
             ).all()
-            now = await _db_now(session)
-        return show, [(seat, _seat_status(res, now)) for seat, res in rows]
-
-    async def hold_seats(
-        self,
-        show_id: UUID,
-        seat_labels: list[str],
-        held_by: str,
-        hold_id: UUID,
-        hold_ttl: timedelta,
-        per_hold_limit: int,
-    ) -> datetime:
-        try:
-            # Any exception raised inside rolls the whole transaction back.
-            async with self._client.transaction() as session:
-                return await self._hold_in_txn(
-                    session,
-                    show_id,
-                    seat_labels,
-                    held_by,
-                    hold_id,
-                    hold_ttl,
-                    per_hold_limit,
-                )
-        except IntegrityError as e:
-            # Unique index backstop fired: someone else holds one of the seats.
-            raise HTTPException(status.HTTP_409_CONFLICT, "seats not available") from e
-
-    async def _hold_in_txn(
-        self,
-        session: AsyncSession,
-        show_id: UUID,
-        seat_labels: list[str],
-        held_by: str,
-        hold_id: UUID,
-        hold_ttl: timedelta,
-        per_hold_limit: int,
-    ) -> datetime:
-        # Serialise this user's holds on this show, so parallel requests for
-        # different seats can't each pass the limit check. Released on
-        # COMMIT/ROLLBACK.
-        lock_key = func.hashtextextended(f"{show_id}:{held_by}", 0)
-        await session.exec(select(func.pg_advisory_xact_lock(lock_key)))
-
-        already_held = (
-            await session.exec(
-                select(func.count())
-                .select_from(SeatReservation)
-                .join(Seat, col(Seat.id) == SeatReservation.seat_id)
-                .where(
-                    Seat.show_id == show_id,
-                    SeatReservation.held_by == held_by,
-                    SeatReservation.status == ReservationStatus.HELD,
-                    col(SeatReservation.hold_expires_at) > func.now(),
-                )
-            )
-        ).one()
-        if already_held + len(seat_labels) > per_hold_limit:
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN,
-                f"Cannot hold more than {per_hold_limit} seats at a time",
-            )
-
-        # Lock the static seat rows (they always exist) in label order so
-        # overlapping holds can't deadlock.
-        seats = (
-            await session.exec(
-                select(Seat)
-                .where(Seat.show_id == show_id, col(Seat.label).in_(seat_labels))
-                .order_by(col(Seat.label))
-                .with_for_update()
-            )
-        ).all()
-        missing = sorted(set(seat_labels) - {s.label for s in seats})
-        if missing:
-            raise HTTPException(
-                status.HTTP_404_NOT_FOUND, f"seats not found: {missing}"
-            )
-
-        seat_ids = [s.id for s in seats]
-        label_by_id = {s.id: s.label for s in seats}
-        now = await _db_now(session)
-        reservations = (
-            await session.exec(
-                select(SeatReservation).where(
-                    col(SeatReservation.seat_id).in_(seat_ids)
-                )
-            )
-        ).all()
-        taken = sorted(
-            label_by_id[r.seat_id]
-            for r in reservations
-            if _seat_status(r, now) != SeatStatus.AVAILABLE
-        )
-        if taken:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT, f"seats not available: {taken}"
-            )
-
-        # Expired holds still occupy the unique index slot; clear them first.
-        await session.exec(
-            delete(SeatReservation).where(
-                col(SeatReservation.seat_id).in_(seat_ids),
-                SeatReservation.status == ReservationStatus.HELD,
-                col(SeatReservation.hold_expires_at) <= now,
-            )
-        )
-        expires_at = now + hold_ttl
-        session.add_all(
-            SeatReservation(
-                seat_id=seat_id,
-                status=ReservationStatus.HELD,
-                hold_id=hold_id,
-                held_by=held_by,
-                hold_expires_at=expires_at,
-            )
-            for seat_id in seat_ids
-        )
-        return expires_at
-
-    async def release_expired_holds(self) -> int:
-        # Single statement, so atomic on its own.
-        async with self._client.connection() as session:
-            result = await session.exec(
-                delete(SeatReservation).where(
-                    SeatReservation.status == ReservationStatus.HELD,
-                    col(SeatReservation.hold_expires_at) < func.now(),
-                )
-            )
-            return result.rowcount
+            now = (await session.exec(select(func.now()))).one()
+        return show, [(seat, seat_status(res, now)) for seat, res in rows]
 
     async def release_hold(self, hold_id: UUID, held_by: str) -> int:
         # Single statement, so atomic. held_by: only the holder can release.
@@ -203,3 +74,121 @@ class DBFacade(DBPort):
                 )
             )
             return result.rowcount
+
+    async def release_expired_holds(self) -> int:
+        # Single statement, so atomic on its own.
+        async with self._client.connection() as session:
+            result = await session.exec(
+                delete(SeatReservation).where(
+                    SeatReservation.status == ReservationStatus.HELD,
+                    col(SeatReservation.hold_expires_at) < func.now(),
+                )
+            )
+            return result.rowcount
+
+    # --- transaction + primitives ------------------------------------------
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[Transaction]:
+        try:
+            async with self._client.transaction() as session:
+                yield _PgTransaction(session)
+        except IntegrityError as e:
+            # A unique backstop fired under a race (seat index / user+key).
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "Error processing request"
+            ) from e
+
+    async def advisory_lock(self, txn: Transaction, key: str) -> None:
+        # Released automatically on COMMIT/ROLLBACK. Hash collisions only
+        # serialise unrelated keys; never incorrect.
+        await _session(txn).exec(
+            select(func.pg_advisory_xact_lock(func.hashtextextended(key, 0)))
+        )
+
+    async def now(self, txn: Transaction) -> datetime:
+        return (await _session(txn).exec(select(func.now()))).one()
+
+    async def count_active_holds(
+        self, txn: Transaction, show_id: UUID, user_id: str
+    ) -> int:
+        return (
+            await _session(txn).exec(
+                select(func.count())
+                .select_from(SeatReservation)
+                .join(Seat, col(Seat.id) == SeatReservation.seat_id)
+                .where(
+                    Seat.show_id == show_id,
+                    SeatReservation.held_by == user_id,
+                    SeatReservation.status == ReservationStatus.HELD,
+                    col(SeatReservation.hold_expires_at) > func.now(),
+                )
+            )
+        ).one()
+
+    async def lock_seats(
+        self, txn: Transaction, show_id: UUID, labels: list[str]
+    ) -> list[Seat]:
+        # Label order: every transaction locks in the same order, so no deadlocks.
+        return list(
+            (
+                await _session(txn).exec(
+                    select(Seat)
+                    .where(Seat.show_id == show_id, col(Seat.label).in_(labels))
+                    .order_by(col(Seat.label))
+                    .with_for_update()
+                )
+            ).all()
+        )
+
+    async def get_reservations(
+        self, txn: Transaction, seat_ids: list[UUID]
+    ) -> list[SeatReservation]:
+        return list(
+            (
+                await _session(txn).exec(
+                    select(SeatReservation).where(
+                        col(SeatReservation.seat_id).in_(seat_ids)
+                    )
+                )
+            ).all()
+        )
+
+    async def replace_reservations(
+        self, txn: Transaction, seat_ids: list[UUID], rows: list[SeatReservation]
+    ) -> None:
+        session = _session(txn)
+        await session.exec(
+            delete(SeatReservation).where(col(SeatReservation.seat_id).in_(seat_ids))
+        )
+        session.add_all(rows)
+        await session.flush()
+
+    async def find_booking(
+        self, txn: Transaction, user_id: str, idempotency_key: str
+    ) -> Booking | None:
+        return (
+            await _session(txn).exec(
+                select(Booking).where(
+                    Booking.booked_by == user_id,
+                    Booking.idempotency_key == idempotency_key,
+                )
+            )
+        ).first()
+
+    async def get_booking_labels(self, txn: Transaction, booking_id: UUID) -> list[str]:
+        return list(
+            (
+                await _session(txn).exec(
+                    select(Seat.label)
+                    .join(SeatReservation, col(SeatReservation.seat_id) == Seat.id)
+                    .where(SeatReservation.booking_id == booking_id)
+                    .order_by(col(Seat.label))
+                )
+            ).all()
+        )
+
+    async def insert_booking(self, txn: Transaction, booking: Booking) -> None:
+        session = _session(txn)
+        session.add(booking)
+        await session.flush()  # booking row must exist before reservations FK it

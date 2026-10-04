@@ -11,6 +11,13 @@ MAX_SEATS_PER_SHOW = 500
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
+def reject_duplicate_labels(seats: list[str]) -> list[str]:
+    duplicates = sorted({s for s in seats if seats.count(s) > 1})
+    if duplicates:
+        raise ValueError(f"duplicate seat labels: {duplicates}")
+    return seats
+
+
 class SeatStatus(StrEnum):
     """Computed per read from seat_reservations; never stored."""
 
@@ -27,10 +34,7 @@ class CreateShowRequest(BaseModel):
     @field_validator("seats")
     @classmethod
     def seats_unique(cls, seats: list[str]) -> list[str]:
-        duplicates = sorted({s for s in seats if seats.count(s) > 1})
-        if duplicates:
-            raise ValueError(f"duplicate seat labels: {duplicates}")
-        return seats
+        return reject_duplicate_labels(seats)
 
 
 class SeatResponse(BaseModel):

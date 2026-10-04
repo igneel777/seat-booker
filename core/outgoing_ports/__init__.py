@@ -1,3 +1,3 @@
-from core.outgoing_ports.db import DBPort
+from core.outgoing_ports.db import DBPort, Transaction
 
-__all__ = ["DBPort"]
+__all__ = ["DBPort", "Transaction"]

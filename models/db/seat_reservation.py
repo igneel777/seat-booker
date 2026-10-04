@@ -23,8 +23,7 @@ class SeatReservation(SQLModel, table=True):
             name="ck_seat_reservations_held_fields",
         ),
         CheckConstraint(
-            "status <> 'BOOKED' OR (booking_id IS NOT NULL AND booked_by IS NOT NULL "
-            "AND booked_at IS NOT NULL)",
+            "status <> 'BOOKED' OR booking_id IS NOT NULL",
             name="ck_seat_reservations_booked_fields",
         ),
         # Backstop against double holds: at most one reservation row per seat.
@@ -48,6 +47,4 @@ class SeatReservation(SQLModel, table=True):
     hold_expires_at: datetime | None = Field(
         default=None, sa_type=DateTime(timezone=True)
     )
-    booking_id: UUID | None = None
-    booked_by: str | None = None
-    booked_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    booking_id: UUID | None = Field(default=None, foreign_key="bookings.id")
