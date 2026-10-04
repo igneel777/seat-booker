@@ -1,13 +1,22 @@
+from enum import StrEnum
 from typing import Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 
-from models.db import Seat, SeatStatus, Show
+from models.db import Seat, Show
 
 MAX_SEATS_PER_SHOW = 500
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class SeatStatus(StrEnum):
+    """Computed per read from seat_reservations; never stored."""
+
+    AVAILABLE = "AVAILABLE"
+    HELD = "HELD"
+    BOOKED = "BOOKED"
 
 
 class CreateShowRequest(BaseModel):
@@ -37,14 +46,16 @@ class ShowResponse(BaseModel):
     seats: list[SeatResponse]
 
     @classmethod
-    def from_models(cls, show: Show, seats: list[Seat]) -> "ShowResponse":
+    def from_models(
+        cls, show: Show, seats: list[tuple[Seat, SeatStatus]]
+    ) -> "ShowResponse":
         return cls(
             id=show.id,
             name=show.name,
             seats=[
                 SeatResponse(
-                    id=s.id, label=s.label, status=s.status, price_paise=s.price_paise
+                    id=s.id, label=s.label, status=st, price_paise=s.price_paise
                 )
-                for s in seats
+                for s, st in seats
             ],
         )

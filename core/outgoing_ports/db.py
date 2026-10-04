@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from uuid import UUID
 
+from models.api import SeatStatus
 from models.db import Seat, Show
 
 
@@ -14,8 +15,11 @@ class DBPort(ABC):
     @abstractmethod
     async def get_show_with_seats(
         self, show_id: UUID
-    ) -> tuple[Show, list[Seat]] | None:
-        """Show plus its seats ordered by label; None if the show doesn't exist."""
+    ) -> tuple[Show, list[tuple[Seat, SeatStatus]]] | None:
+        """Show plus its seats (ordered by label) with their computed status.
+
+        None if the show doesn't exist.
+        """
 
     @abstractmethod
     async def hold_seats(
@@ -35,4 +39,4 @@ class DBPort(ABC):
 
     @abstractmethod
     async def release_expired_holds(self) -> int:
-        """Set expired HELD seats back to AVAILABLE; returns rows released."""
+        """Delete expired HELD reservations; returns rows released."""
