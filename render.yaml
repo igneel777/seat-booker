@@ -1,0 +1,49 @@
+# Render Blueprint — deploys the API (from Dockerfile) + a free Postgres.
+# Render doesn't run docker-compose; this file is its equivalent.
+# Deploy: Render dashboard → New → Blueprint → pick this repo → Apply.
+
+services:
+  - type: web
+    name: seat-booker-api
+    runtime: docker
+    plan: free
+    region: oregon # must match the database region for the internal hostname
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /liveness
+    autoDeploy: true
+    envVars:
+      # Uvicorn listens on 8000 (Dockerfile CMD); tell Render to route there.
+      - key: PORT
+        value: "8000"
+      - key: DB_HOST
+        fromDatabase:
+          name: seat-booker-postgres
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: seat-booker-postgres
+          property: port
+      - key: DB_USER
+        fromDatabase:
+          name: seat-booker-postgres
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: seat-booker-postgres
+          property: password
+      - key: DB_NAME
+        fromDatabase:
+          name: seat-booker-postgres
+          property: database
+      # Replaces the dev default secret; copy it from the dashboard to mint tokens.
+      - key: AUTH_JWT_SECRET
+        generateValue: true
+
+databases:
+  - name: seat-booker-postgres
+    plan: free
+    region: oregon
+    postgresMajorVersion: "16"
+    databaseName: seatbooker
+    user: seatbooker
+    ipAllowList: [] # internal-only: reachable from the API, not the internet
