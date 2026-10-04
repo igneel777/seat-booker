@@ -189,3 +189,17 @@ class DBFacade(DBPort):
                 )
             )
             return result.rowcount
+
+    async def release_hold(self, hold_id: UUID, held_by: str) -> int:
+        # Single statement, so atomic. held_by: only the holder can release.
+        # status = HELD: a booked seat is never released; if a booking holds the
+        # rows, this waits, re-checks the WHERE and deletes nothing.
+        async with self._client.connection() as session:
+            result = await session.exec(
+                delete(SeatReservation).where(
+                    SeatReservation.hold_id == hold_id,
+                    SeatReservation.held_by == held_by,
+                    SeatReservation.status == ReservationStatus.HELD,
+                )
+            )
+            return result.rowcount

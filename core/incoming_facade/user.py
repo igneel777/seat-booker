@@ -39,3 +39,7 @@ class UserFacade(UserPort):
         return HoldResponse(
             hold_id=hold_id, hold_expires_at=expires_at, seats=sorted(seat_labels)
         )
+
+    async def release_hold(self, hold_id: UUID, held_by: str) -> None:
+        await self._db.release_expired_holds()
+        await self._db.release_hold(hold_id, held_by)

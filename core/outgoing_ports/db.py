@@ -40,3 +40,7 @@ class DBPort(ABC):
     @abstractmethod
     async def release_expired_holds(self) -> int:
         """Delete expired HELD reservations; returns rows released."""
+
+    @abstractmethod
+    async def release_hold(self, hold_id: UUID, held_by: str) -> int:
+        """Delete this user's HELD rows for the hold; returns rows deleted."""
