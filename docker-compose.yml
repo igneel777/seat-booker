@@ -33,7 +33,7 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/liveness')"]
-      interval: 30s
+      interval: 300s
       timeout: 3s
       start_period: 5s
       retries: 3

@@ -9,5 +9,5 @@ class AuthSettings(BaseSettings):
 
     # Dev default so the PoC starts with no .env.
     # Deliberate for this PoC only — never ship a default secret in production.
-    jwt_secret: SecretStr = SecretStr("seat-booker-jwt-secret")
+    jwt_secret: SecretStr = SecretStr("seat-booker-jwt-secret-000000000")
     jwt_algorithm: str = "HS256"
