@@ -64,7 +64,7 @@ class DBFacade(DBPort):
         self, show_id: UUID
     ) -> tuple[Show, list[tuple[Seat, SeatStatus]]] | None:
         # One statement for all seat states, so no transaction needed. The
-        # partial unique index guarantees at most one reservation row per seat.
+        # unique index on seat_id guarantees at most one reservation row per seat.
         async with self._client.connection() as session:
             show = await session.get(Show, show_id)
             if show is None:

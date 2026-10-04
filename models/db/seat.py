@@ -15,6 +15,7 @@ class Seat(SQLModel, table=True):
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    show_id: UUID = Field(foreign_key="shows.id", index=True, nullable=False)
+    # No own index: uq_seats_show_label leads with show_id.
+    show_id: UUID = Field(foreign_key="shows.id", nullable=False)
     label: str = Field(nullable=False)
     price_paise: int = Field(nullable=False)

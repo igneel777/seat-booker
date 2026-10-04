@@ -5,7 +5,7 @@
 One Postgres transaction per hold/book: `SELECT ... FROM seats WHERE label IN (...) ORDER BY label FOR UPDATE` → check reservations → write → `COMMIT`.
 
 - **Race-free:** the row lock serialises writers of a seat. The loser waits, then its check (a new statement under READ COMMITTED) sees the winner's commit → `409`.
-- **Backstop:** a partial unique index allows one active (HELD/BOOKED) reservation per seat, so a bug can't produce a double booking.
+- **Backstop:** a unique index on `seat_reservations(seat_id)` allows one reservation row per seat, so a bug can't produce a double booking.
 - **No deadlock:** seats are locked in sorted label order. A deadlock needs someone holding A2 while waiting for A1, which is impossible when everyone locks A1 first.
 - **All-or-nothing:** any seat taken → the whole transaction rolls back.
 

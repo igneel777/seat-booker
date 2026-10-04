@@ -95,7 +95,7 @@ erDiagram
 ```
 
 - **Seats are static; state lives in `seat_reservations`.** No row means AVAILABLE; an expired HELD row also counts as AVAILABLE. `seats` stays the lock target because a free seat has no reservation row to lock.
-- **Backstops:** partial unique index on `seat_reservations(seat_id) WHERE status IN (HELD, BOOKED)` (one active row per seat); `UNIQUE (booked_by, idempotency_key)` on bookings.
+- **Backstops:** unique index on `seat_reservations(seat_id)` (one row per seat); `UNIQUE (booked_by, idempotency_key)` on bookings.
 
 ## 6. Flows
 

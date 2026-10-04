@@ -27,13 +27,15 @@ class SeatReservation(SQLModel, table=True):
             name="ck_seat_reservations_booked_fields",
         ),
         # Backstop against double holds: at most one reservation row per seat.
-        # Can't include now() (index predicates must be immutable), so expired
-        # holds must be deleted before a new hold is inserted.
+        # Not partial: a predicate would stop plain seat_id lookups using it.
+        # Can't exclude expired holds (now() isn't immutable), so they must be
+        # deleted before a new hold is inserted.
+        Index("uq_seat_reservations_seat", "seat_id", unique=True),
+        # Expired-hold sweeper.
         Index(
-            "uq_seat_reservations_active_seat",
-            "seat_id",
-            unique=True,
-            postgresql_where=text("status IN ('HELD', 'BOOKED')"),
+            "ix_seat_reservations_held_expiry",
+            "hold_expires_at",
+            postgresql_where=text("status = 'HELD'"),
         ),
     )
 
@@ -47,4 +49,4 @@ class SeatReservation(SQLModel, table=True):
     hold_expires_at: datetime | None = Field(
         default=None, sa_type=DateTime(timezone=True)
     )
-    booking_id: UUID | None = Field(default=None, foreign_key="bookings.id")
+    booking_id: UUID | None = Field(default=None, foreign_key="bookings.id", index=True)
