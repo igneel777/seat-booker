@@ -6,6 +6,7 @@ dependencies = [
     "asgi-correlation-id>=5.0.1",
     "asyncpg>=0.31.0",
     "fastapi>=0.142.2",
+    "prometheus-client>=0.26.0",
     "pydantic-settings>=2.15.0",
     "pyjwt>=2.15.1",
     "sqlalchemy[asyncio]>=2.0.54",

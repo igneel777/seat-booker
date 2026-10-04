@@ -44,6 +44,13 @@ class DBPort(ABC):
     async def release_expired_holds(self) -> int:
         """Delete expired HELD reservations; returns rows released."""
 
+    @abstractmethod
+    async def count_seats_by_status(self) -> list[tuple[UUID, SeatStatus, int]]:
+        """(show_id, status, seats) for every show, same rule as seat_status().
+
+        Statuses with no seats are absent.
+        """
+
     # --- transaction + primitives ------------------------------------------
 
     @abstractmethod

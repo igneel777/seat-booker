@@ -1,7 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from core.incoming_ports import HealthPort
 from routes.dependencies import get_health_facade
@@ -20,6 +20,15 @@ async def health(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
     return JSONResponse({"status": "ok", "db": "ok"})
+
+
+@router.get("/metrics")
+async def metrics(
+    facade: Annotated[HealthPort, Depends(get_health_facade)],
+) -> Response:
+    """Prometheus scrape target: counters plus seat counts read from the DB."""
+    body, content_type = await facade.render_metrics()
+    return Response(body, media_type=content_type)
 
 
 @router.get("/liveness")

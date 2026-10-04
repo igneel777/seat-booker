@@ -5,12 +5,18 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, func, update
+from sqlalchemy import case, delete, func, literal_column, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from core.outgoing_ports import DBPort, Transaction
+from core.outgoing_ports import (
+    DBPort,
+    DeclineReason,
+    MetricsPort,
+    Operation,
+    Transaction,
+)
 from core.seat_rules import seat_status
 from infra.db_client import DBClient
 from models.api import SeatStatus
@@ -36,8 +42,9 @@ def _session(txn: Transaction) -> AsyncSession:
 class DBFacade(DBPort):
     """Postgres implementation of DBPort. Executes statements; no business rules."""
 
-    def __init__(self, client: DBClient) -> None:
+    def __init__(self, client: DBClient, metrics: MetricsPort) -> None:
         self._client = client
+        self._metrics = metrics
 
     # --- standalone, each atomic -------------------------------------------
 
@@ -100,6 +107,39 @@ class DBFacade(DBPort):
                 logger.info("released %d expired hold seats", result.rowcount)
             return result.rowcount
 
+    async def count_seats_by_status(self) -> list[tuple[UUID, SeatStatus, int]]:
+        # Same rule as seat_status(): no row or an expired hold is AVAILABLE.
+        # Literals are inlined (literal_column) and grouped in an outer query, so
+        # Postgres sees the CASE once rather than two differently-bound copies.
+        per_seat = (
+            select(
+                col(Seat.show_id).label("show_id"),
+                case(
+                    (
+                        col(SeatReservation.status) == literal_column("'BOOKED'"),
+                        literal_column("'BOOKED'"),
+                    ),
+                    (
+                        (col(SeatReservation.status) == literal_column("'HELD'"))
+                        & (col(SeatReservation.hold_expires_at) > func.now()),
+                        literal_column("'HELD'"),
+                    ),
+                    else_=literal_column("'AVAILABLE'"),
+                ).label("status"),
+            )
+            .outerjoin(SeatReservation, col(SeatReservation.seat_id) == Seat.id)
+            .subquery()
+        )
+        async with self._client.connection() as session:
+            rows = (
+                await session.exec(
+                    select(
+                        per_seat.c.show_id, per_seat.c.status, func.count()
+                    ).group_by(per_seat.c.show_id, per_seat.c.status)
+                )
+            ).all()
+        return [(show_id, SeatStatus(st), n) for show_id, st, n in rows]
+
     # --- transaction + primitives ------------------------------------------
 
     @asynccontextmanager
@@ -110,6 +150,9 @@ class DBFacade(DBPort):
         except IntegrityError as e:
             # A unique backstop fired under a race (seat index / user+key).
             logger.error("integrity error, transaction rolled back", exc_info=True)
+            self._metrics.reservation_declined(
+                Operation.UNKNOWN, DeclineReason.CONFLICT
+            )
             raise HTTPException(
                 status.HTTP_409_CONFLICT, "Error processing request"
             ) from e
