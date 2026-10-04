@@ -21,7 +21,8 @@ class Seat(SQLModel, table=True):
         UniqueConstraint("show_id", "label", name="uq_seats_show_label"),
         CheckConstraint(
             "status = 'AVAILABLE' OR "
-            "(hold_id IS NOT NULL AND held_by IS NOT NULL AND held_at IS NOT NULL)",
+            "(hold_id IS NOT NULL AND held_by IS NOT NULL "
+            "AND hold_expires_at IS NOT NULL)",
             name="ck_seats_hold_fields",
         ),
         CheckConstraint(
@@ -43,7 +44,9 @@ class Seat(SQLModel, table=True):
     )
     hold_id: UUID | None = Field(default=None, index=True)
     held_by: str | None = None
-    held_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    hold_expires_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
     booked_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     updated_at: datetime | None = Field(
         default=None,
